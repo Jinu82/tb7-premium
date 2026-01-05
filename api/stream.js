@@ -4,31 +4,27 @@ import { kv } from "@vercel/kv";
 
 const TB7_BASE_URL = "https://tb7.pl";
 
-// Pobranie tytułu z IMDb przez OMDb
-async function getTitleFromImdb(imdbId) {
+// Pobranie tytułu i roku z IMDb przez OMDb
+async function getTitleAndYearFromImdb(imdbId) {
   const apiKey = process.env.OMDB_API_KEY;
-
-  // Jeśli nie ma klucza – używamy imdbId jako „awaryjnej nazwy” (żeby nie wywalać funkcji)
-  if (!apiKey) {
-    return imdbId;
-  }
+  if (!apiKey) return { title: imdbId, year: null };
 
   const res = await axios.get("https://www.omdbapi.com/", {
-    params: {
-      i: imdbId,
-      apikey: apiKey,
-    },
+    params: { i: imdbId, apikey: apiKey },
     timeout: 8000,
   });
 
   if (!res.data || res.data.Response === "False") {
-    return imdbId;
+    return { title: imdbId, year: null };
   }
 
-  return res.data.Title;
+  return {
+    title: res.data.Title || imdbId,
+    year: res.data.Year || null,
+  };
 }
 
-// Logowanie do TB7 – używa danych z /config (KV)
+// Logowanie do TB7
 async function loginTB7() {
   const config = (await kv.hgetall("tb7:config")) || {};
   const login = config.login;
@@ -38,18 +34,12 @@ async function loginTB7() {
     throw new Error("Brak loginu/hasła TB7 w konfiguracji");
   }
 
-  // Spróbuj użyć istniejącego cookie z KV (żeby nie logować za każdym razem)
   const cachedCookie = await kv.get("tb7:sessionCookie");
-  if (cachedCookie) {
-    return cachedCookie;
-  }
+  if (cachedCookie) return cachedCookie;
 
   const res = await axios.post(
     `${TB7_BASE_URL}/zaloguj`,
-    new URLSearchParams({
-      login,
-      haslo: password,
-    }),
+    new URLSearchParams({ login, haslo: password }),
     {
       maxRedirects: 0,
       validateStatus: (s) => s === 302 || s === 200 || s === 301,
@@ -62,97 +52,78 @@ async function loginTB7() {
   }
 
   const cookie = setCookie.map((c) => c.split(";")[0]).join("; ");
-
-  // Zapisz sesję na jakiś czas (np. 6h)
   await kv.set("tb7:sessionCookie", cookie, { ex: 6 * 60 * 60 });
-
   return cookie;
 }
 
-// Wyszukiwanie na TB7 po tytule (film lub serial)
-async function searchTB7ByTitle(title, type, cookie) {
-  // type: "movie" | "series"
-  // Zakładam, że TB7 ma wspólną wyszukiwarkę po nazwie
-  const res = await axios.get(`${TB7_BASE_URL}/szukaj`, {
-    params: { q: title },
-    headers: {
-      Cookie: cookie,
-    },
-  });
+// Wyszukiwanie na TB7 przez POST
+async function searchTB7ByTitle(title, year, cookie) {
+  const res = await axios.post(
+    `${TB7_BASE_URL}/mojekonto/szukaj`,
+    new URLSearchParams({ search: title, type: "1" }),
+    {
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    }
+  );
 
   const $ = cheerio.load(res.data);
   const results = [];
 
-  // Tu trzeba dopasować do HTML TB7 – zostawiam przykładową strukturę, którą możesz poprawić pod swój markup
-  $(".film, .episode, .item").each((i, el) => {
-    const name = $(el).find(".title").text().trim() || $(el).find("h2").text().trim();
-    const href = $(el).find("a").attr("href");
+  $(".btn-1").each((i, el) => {
+    const parent = $(el).closest("form");
+    const content = parent.find("input[name='content']").attr("value");
+    const name = content?.split("/").pop();
 
-    if (!name || !href) return;
+    if (!content || !name) return;
 
-    // Filtrujemy po typie, jeśli TB7 rozróżnia film/serial klasą lub innym markerem
-    if (type === "movie" && $(el).hasClass("series")) return;
-    if (type === "series" && $(el).hasClass("movie")) return;
+    const nameLower = name.toLowerCase();
+    const titleLower = title.toLowerCase();
+
+    // Filtrowanie: musi zawierać tytuł i rok
+    if (!nameLower.includes(titleLower)) return;
+    if (year && !nameLower.includes(year)) return;
 
     results.push({
       name,
-      url: href.startsWith("http") ? href : `${TB7_BASE_URL}${href}`,
+      url: `${TB7_BASE_URL}/mojekonto/szukaj`,
     });
   });
 
   return results;
 }
 
-// Generowanie listy streamów
-async function getStreamsFromTB7(title, type, season, episode) {
+// Generowanie streamów
+async function getStreamsFromTB7(title, year, type) {
   const cookie = await loginTB7();
-  const results = await searchTB7ByTitle(title, type, cookie);
+  const results = await searchTB7ByTitle(title, year, cookie);
 
-  if (!results.length) {
-    return [];
-  }
+  if (!results.length) return [];
 
-  // Na start: bierzemy pierwszy wynik z TB7
-  const chosen = results[0];
-
-  // Jeśli kiedyś będziesz miał bezpośrednie linki do plików / playerów, tu je wyciągniesz.
-  // Na razie zwrócimy po prostu link do strony TB7.
-  const streams = [
-    {
-      name: "TB7 Premium",
-      title: chosen.name,
-      url: chosen.url,
-    },
-  ];
-
-  return streams;
+  return results.map((r) => ({
+    name: "TB7 Premium",
+    title: r.name,
+    url: r.url,
+  }));
 }
 
 export default async function handler(req, res) {
   try {
-    const { type = "movie", id, season, episode } = req.query;
+    const { type = "movie", id } = req.query;
+    if (!id) return res.status(400).json({ streams: [], error: "Missing id" });
 
-    if (!id) {
-      return res.status(400).json({ streams: [], error: "Missing id" });
-    }
+    let title = id;
+    let year = null;
 
-    let titleForSearch;
-
-    // Jeśli id wygląda jak IMDb (tt1234567) → pobierz tytuł z OMDb
     if (id.startsWith("tt")) {
-      titleForSearch = await getTitleFromImdb(id);
-    } else {
-      // Jeśli kiedyś będziesz podawał nazwę bezpośrednio – użyj jej
-      titleForSearch = id;
+      const data = await getTitleAndYearFromImdb(id);
+      title = data.title;
+      year = data.year;
     }
 
-    const streams = await getStreamsFromTB7(
-      titleForSearch,
-      type,
-      season ? parseInt(season, 10) : undefined,
-      episode ? parseInt(episode, 10) : undefined
-    );
-
+    const streams = await getStreamsFromTB7(title, year, type);
     return res.status(200).json({ streams });
   } catch (err) {
     console.error("STREAM ERROR:", err);

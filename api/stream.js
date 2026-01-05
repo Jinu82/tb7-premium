@@ -3,25 +3,34 @@ import * as cheerio from "cheerio";
 import { kv } from "@vercel/kv";
 
 const TB7_BASE_URL = "https://tb7.pl";
+const TMDB_KEY = process.env.TMDB_API_KEY;
 
-// Pobranie tytułu i roku z IMDb przez OMDb
-async function getTitleAndYearFromImdb(imdbId) {
-  const apiKey = process.env.OMDB_API_KEY;
-  if (!apiKey) return { title: imdbId, year: null };
+// Pobranie polskiego tytułu z TMDb
+async function getPolishTitle(imdbId) {
+  if (!TMDB_KEY) return null;
 
-  const res = await axios.get("https://www.omdbapi.com/", {
-    params: { i: imdbId, apikey: apiKey },
-    timeout: 8000,
-  });
+  try {
+    const res = await axios.get(
+      `https://api.themoviedb.org/3/find/${imdbId}`,
+      {
+        params: {
+          api_key: TMDB_KEY,
+          language: "pl-PL",
+          external_source: "imdb_id",
+        },
+      }
+    );
 
-  if (!res.data || res.data.Response === "False") {
-    return { title: imdbId, year: null };
+    const movie = res.data.movie_results?.[0];
+    if (!movie) return null;
+
+    return {
+      title: movie.title || movie.original_title,
+      year: movie.release_date?.split("-")[0] || null,
+    };
+  } catch {
+    return null;
   }
-
-  return {
-    title: res.data.Title || imdbId,
-    year: res.data.Year || null,
-  };
 }
 
 // Logowanie do TB7
@@ -56,8 +65,8 @@ async function loginTB7() {
   return cookie;
 }
 
-// Wyszukiwanie na TB7 przez POST
-async function searchTB7ByTitle(title, year, cookie) {
+// Wyszukiwanie na TB7
+async function searchTB7(title, year, cookie) {
   const res = await axios.post(
     `${TB7_BASE_URL}/mojekonto/szukaj`,
     new URLSearchParams({ search: title, type: "1" }),
@@ -95,38 +104,40 @@ async function searchTB7ByTitle(title, year, cookie) {
   return results;
 }
 
-// Generowanie streamów
-async function getStreamsFromTB7(title, year, type) {
-  const cookie = await loginTB7();
-  const results = await searchTB7ByTitle(title, year, cookie);
-
-  if (!results.length) return [];
-
-  return results.map((r) => ({
-    name: "TB7 Premium",
-    title: r.name,
-    url: r.url,
-  }));
-}
-
 export default async function handler(req, res) {
   try {
-    const { type = "movie", id } = req.query;
-    if (!id) return res.status(400).json({ streams: [], error: "Missing id" });
+    const { id } = req.query;
+    if (!id) return res.status(400).json({ streams: [] });
 
-    let title = id;
+    let title = null;
     let year = null;
 
+    // Pobranie polskiego tytułu z TMDb
     if (id.startsWith("tt")) {
-      const data = await getTitleAndYearFromImdb(id);
-      title = data.title;
-      year = data.year;
+      const tmdb = await getPolishTitle(id);
+
+      if (tmdb) {
+        title = tmdb.title;
+        year = tmdb.year;
+      } else {
+        // fallback: użyj IMDb ID jako tytułu
+        title = id;
+      }
+    } else {
+      title = id;
     }
 
-    const streams = await getStreamsFromTB7(title, year, type);
-    return res.status(200).json({ streams });
+    const cookie = await loginTB7();
+    const results = await searchTB7(title, year, cookie);
+
+    return res.status(200).json({
+      streams: results.map((r) => ({
+        name: "TB7 Premium",
+        title: r.name,
+        url: r.url,
+      })),
+    });
   } catch (err) {
-    console.error("STREAM ERROR:", err);
-    return res.status(500).json({ streams: [], error: err.message || "Internal error" });
+    return res.status(500).json({ streams: [], error: err.message });
   }
 }

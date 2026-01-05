@@ -4,6 +4,30 @@ import { kv } from "@vercel/kv";
 
 const TB7_BASE_URL = "https://tb7.pl";
 
+// Pobranie IMDb z OMDb na podstawie tytułu
+async function getImdbFromTitle(title) {
+  const apiKey = process.env.OMDB_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const res = await axios.get("https://www.omdbapi.com/", {
+      params: {
+        t: title,
+        apikey: apiKey,
+      },
+      timeout: 8000,
+    });
+
+    if (res.data && res.data.imdbID && res.data.imdbID.startsWith("tt")) {
+      return res.data.imdbID;
+    }
+  } catch (e) {
+    console.error("OMDb error:", e.message);
+  }
+
+  return null;
+}
+
 async function loginTB7() {
   const config = (await kv.hgetall("tb7:config")) || {};
   const login = config.login;
@@ -42,10 +66,8 @@ async function loginTB7() {
   return cookie;
 }
 
-// Pobiera katalog z TB7 z prostą paginacją
+// Pobiera katalog z TB7 z paginacją
 async function fetchTb7Catalog(type, page, limit, cookie) {
-  // Tu musisz dostosować URL do tego, jak TB7 paginuje listy:
-  // np. /filmy?page=1, /seriale?page=1, itd.
   const url =
     type === "series"
       ? `${TB7_BASE_URL}/seriale`
@@ -62,22 +84,26 @@ async function fetchTb7Catalog(type, page, limit, cookie) {
   $(".film, .episode, .item").each((i, el) => {
     if (metas.length >= limit) return;
 
-    const name = $(el).find(".title").text().trim() || $(el).find("h2").text().trim();
-    const yearText = $(el).find(".year").text().trim();
-    const poster = $(el).find("img").attr("src");
-    const imdbId =
-      $(el).attr("data-imdb") ||
-      $(el).find("[data-imdb]").attr("data-imdb") ||
+    const name =
+      $(el).find(".title").text().trim() ||
+      $(el).find("h2").text().trim() ||
       null;
 
     if (!name) return;
 
+    const yearText = $(el).find(".year").text().trim();
+    const poster = $(el).find("img").attr("src");
+
     metas.push({
-      id: imdbId || name, // jeśli nie ma IMDb, użyj nazwy jako id
-      type,
       name,
       year: yearText || undefined,
-      poster: poster && poster.startsWith("http") ? poster : poster ? `${TB7_BASE_URL}${poster}` : undefined,
+      poster:
+        poster && poster.startsWith("http")
+          ? poster
+          : poster
+          ? `${TB7_BASE_URL}${poster}`
+          : undefined,
+      type,
     });
   });
 
@@ -92,7 +118,22 @@ export default async function handler(req, res) {
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
 
     const cookie = await loginTB7();
-    const metas = await fetchTb7Catalog(type, pageNum, limitNum, cookie);
+    const rawMetas = await fetchTb7Catalog(type, pageNum, limitNum, cookie);
+
+    const metas = [];
+
+    // Dodaj IMDb ID do każdego wpisu
+    for (const item of rawMetas) {
+      const imdbId = await getImdbFromTitle(item.name);
+
+      metas.push({
+        id: imdbId || item.name, // IMDb jeśli jest, fallback: nazwa
+        type: item.type,
+        name: item.name,
+        year: item.year,
+        poster: item.poster,
+      });
+    }
 
     return res.status(200).json({ metas });
   } catch (err) {

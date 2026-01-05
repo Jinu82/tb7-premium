@@ -6,25 +6,10 @@
     }
   },
   "routes": [
-    {
-      "src": "/logo.png",
-      "dest": "/public/logo.png"
-    },
-    {
-      "src": "/manifest.json",
-      "dest": "/api/manifest.js"
-    },
-    {
-      "src": "/catalog/(.*)",
-      "dest": "/api/catalog.js"
-    },
-    {
-      "src": "/stream/(.*)",
-      "dest": "/api/stream.js"
-    },
-    {
-      "src": "/config",
-      "dest": "/api/config.js"
-    }
+    { "src": "/logo.png", "dest": "/public/logo.png" },
+    { "src": "/manifest.json", "dest": "/api/manifest.js" },
+    { "src": "/catalog/(.*)", "dest": "/api/catalog.js" },
+    { "src": "/stream/(.*)", "dest": "/api/stream.js" },
+    { "src": "/config", "dest": "/api/config.js" }
   ]
 }

@@ -22,7 +22,8 @@ async function parseBody(req) {
 export default async function handler(req, res) {
     res.setHeader("Access-Control-Allow-Origin", "*");
 
-    const uid = getUID(req, res);
+    // UŻYWAMY STAŁEGO KLUCZA
+    const KEY = "tb7:config";
 
     if (req.method === "POST") {
         const body = await parseBody(req);
@@ -30,7 +31,8 @@ export default async function handler(req, res) {
         const password = body.password || "";
         const mode = body.mode === "ip" ? "ip" : "cookie";
 
-        await kv.hset(`tb7:${uid}`, {
+        // ZAPIS DO JEDNEGO MIEJSCA
+        await kv.hset(KEY, {
             login,
             password,
             mode
@@ -41,7 +43,8 @@ export default async function handler(req, res) {
         return;
     }
 
-    const data = (await kv.hgetall(`tb7:${uid}`)) || {};
+    // ODCZYT Z JEDNEGO MIEJSCA
+    const data = (await kv.hgetall(KEY)) || {};
     const login = data.login || "";
     const password = data.password || "";
     const mode = data.mode === "ip" ? "ip" : "cookie";
@@ -75,36 +78,10 @@ export default async function handler(req, res) {
     `);
 }
 
-function getUID(req, res) {
-    const cookieHeader = req.headers.cookie || "";
-    const cookies = Object.fromEntries(
-        cookieHeader
-            .split(";")
-            .map(c => c.trim())
-            .filter(Boolean)
-            .map(c => {
-                const [k, ...rest] = c.split("=");
-                return [k, rest.join("=")];
-            })
-    );
-
-    if (cookies.tb7uid) return cookies.tb7uid;
-
-    const uid = Math.random().toString(36).substring(2);
-    const existingSetCookie = res.getHeader("Set-Cookie");
-    const newCookie = `tb7uid=${uid}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    if (existingSetCookie) {
-        res.setHeader("Set-Cookie", [].concat(existingSetCookie, newCookie));
-    } else {
-        res.setHeader("Set-Cookie", newCookie);
-    }
-    return uid;
-}
-
 function escapeHtml(str) {
     return String(str)
         .replace(/&/g, "&amp;")
         .replace(/"/g, "&quot;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
-} 
+}

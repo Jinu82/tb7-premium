@@ -8,14 +8,11 @@ export default async function handler(req, res) {
 
     const { type, search } = req.query;
 
-    // Stremio wymaga pola "metas"
     let metas = [];
 
-    // identyfikacja użytkownika
     const uid = getUID(req, res);
     const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
 
-    // pobranie konfiguracji użytkownika
     const config = (await kv.hgetall(`tb7:${uid}`)) || {};
     const login = config.login || "";
     const password = config.password || "";
@@ -42,11 +39,9 @@ export default async function handler(req, res) {
     }
 
     try {
-        // jeśli użytkownik wpisuje wyszukiwanie
         if (search) {
             metas = await searchTB7(search, userData.cookie);
         } else {
-            // katalog główny — pobieramy listę najnowszych filmów
             metas = await latestTB7(userData.cookie);
         }
     } catch (e) {

@@ -118,7 +118,7 @@ async function latestTB7(cookie) {
 
     return metas;
 }
-
+// KV aktywne — testujemy
 function extractIMDB(text) {
     const match = text.match(/tt\d+/);
     return match ? match[0] : null;

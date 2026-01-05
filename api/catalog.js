@@ -1,5 +1,5 @@
 import axios from "axios";
-import cheerio from "cheerio";
+import * as cheerio from "cheerio";
 import { kv } from "@vercel/kv";
 
 export default async function handler(req, res) {

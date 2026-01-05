@@ -1,0 +1,11 @@
+{
+  "name": "tb7-premium",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@vercel/kv": "latest",
+    "axios": "latest",
+    "cheerio": "latest",
+    "qs": "latest"
+  }
+} 

@@ -1,5 +1,5 @@
 import axios from "axios";
-import cheerio from "cheerio";
+import * as cheerio from "cheerio";
 import qs from "qs";
 import { kv } from "@vercel/kv";
 

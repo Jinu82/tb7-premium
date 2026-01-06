@@ -5,12 +5,22 @@ import { kv } from "@vercel/kv";
 const TB7_BASE_URL = "https://tb7.pl";
 const TMDB_KEY = process.env.TMDB_API_KEY;
 
-async function getPolishTitle(imdbId) {
+function stripPolishChars(text) {
+  return text
+    .replace(/ą/g, "a")
+    .replace(/ć/g, "c")
+    .replace(/ę/g, "e")
+    .replace(/ł/g, "l")
+    .replace(/ń/g, "n")
+    .replace(/ó/g, "o")
+    .replace(/ś/g, "s")
+    .replace(/ź/g, "z")
+    .replace(/ż/g, "z");
+}
+
+async function getTMDbTitle(imdbId) {
   console.log("🔍 TMDb lookup for:", imdbId);
-  if (!TMDB_KEY) {
-    console.log("❌ Brak TMDB_API_KEY");
-    return null;
-  }
+  if (!TMDB_KEY) return null;
 
   try {
     const res = await axios.get(`https://api.themoviedb.org/3/find/${imdbId}`, {
@@ -22,38 +32,27 @@ async function getPolishTitle(imdbId) {
     });
 
     const movie = res.data.movie_results?.[0];
-    if (!movie) {
-      console.log("❌ TMDb nie zwrócił filmu");
-      return null;
-    }
+    if (!movie) return null;
 
-    console.log("✅ TMDb zwrócił:", movie.title, movie.release_date);
     return {
       title: movie.title || movie.original_title,
+      original: movie.original_title,
       year: movie.release_date?.split("-")[0] || null,
     };
-  } catch (err) {
-    console.log("❌ Błąd TMDb:", err.message);
+  } catch {
     return null;
   }
 }
 
 async function loginTB7() {
-  console.log("🔐 Logowanie do TB7...");
   const config = (await kv.hgetall("tb7:config")) || {};
   const login = config.login;
   const password = config.password;
 
-  if (!login || !password) {
-    console.log("❌ Brak loginu/hasła TB7");
-    throw new Error("Brak loginu/hasła TB7");
-  }
+  if (!login || !password) throw new Error("Brak loginu/hasła TB7");
 
   const cachedCookie = await kv.get("tb7:sessionCookie");
-  if (cachedCookie) {
-    console.log("✅ Użyto cache cookie TB7");
-    return cachedCookie;
-  }
+  if (cachedCookie) return cachedCookie;
 
   const res = await axios.post(
     `${TB7_BASE_URL}/zaloguj`,
@@ -65,14 +64,10 @@ async function loginTB7() {
   );
 
   const setCookie = res.headers["set-cookie"];
-  if (!setCookie || !setCookie.length) {
-    console.log("❌ TB7 nie zwrócił cookie");
-    throw new Error("TB7 nie zwrócił cookie");
-  }
+  if (!setCookie || !setCookie.length) throw new Error("TB7 nie zwrócił cookie");
 
   const cookie = setCookie.map((c) => c.split(";")[0]).join("; ");
   await kv.set("tb7:sessionCookie", cookie, { ex: 6 * 60 * 60 });
-  console.log("✅ Zalogowano do TB7");
   return cookie;
 }
 
@@ -118,42 +113,44 @@ async function searchTB7(title, year, cookie) {
 export default async function handler(req, res) {
   try {
     const { id } = req.query;
-    if (!id) {
-      console.log("❌ Brak ID");
-      return res.status(400).json({ streams: [] });
-    }
+    if (!id) return res.status(400).json({ streams: [] });
 
-    let title = null;
+    let title = id;
     let year = null;
 
     if (id.startsWith("tt")) {
-      const tmdb = await getPolishTitle(id);
+      const tmdb = await getTMDbTitle(id);
       if (tmdb) {
         title = tmdb.title;
         year = tmdb.year;
-      } else {
-        title = id;
       }
-    } else {
-      title = id;
     }
-
-    console.log("🎬 Tytuł do wyszukania:", title, year);
 
     const cookie = await loginTB7();
-    const results = await searchTB7(title, year, cookie);
 
-    if (!results.length) {
-      console.log("⚠️ Brak wyników TB7");
+    const attempts = [
+      { label: "Polski tytuł", value: title },
+      { label: "Oryginalny tytuł", value: stripPolishChars(title) },
+      { label: "IMDb ID", value: id },
+    ];
+
+    for (const attempt of attempts) {
+      console.log(`🟡 Próba: ${attempt.label} → ${attempt.value}`);
+      const results = await searchTB7(attempt.value, year, cookie);
+      if (results.length) {
+        console.log("🟢 Trafione:", attempt.label);
+        return res.status(200).json({
+          streams: results.map((r) => ({
+            name: "TB7 Premium",
+            title: r.name,
+            url: r.url,
+          })),
+        });
+      }
     }
 
-    return res.status(200).json({
-      streams: results.map((r) => ({
-        name: "TB7 Premium",
-        title: r.name,
-        url: r.url,
-      })),
-    });
+    console.log("🔴 Brak wyników po wszystkich próbach");
+    return res.status(200).json({ streams: [] });
   } catch (err) {
     console.log("❌ Błąd stream.js:", err.message);
     return res.status(500).json({ streams: [], error: err.message });

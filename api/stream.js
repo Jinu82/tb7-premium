@@ -46,8 +46,6 @@ async function login() {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Content-Type": "application/x-www-form-urlencoded",
-        Origin: TB7,
-        Referer: `${TB7}/zaloguj`,
       },
     }
   );
@@ -61,55 +59,49 @@ async function login() {
   return cookie;
 }
 
-// Szukanie filmu
-async function search(title, year, cookie) {
-  const body = new URLSearchParams({
-    search: title,
-    type: "1",
-  });
-
-  const r = await axios.post(`${TB7}/mojekonto/szukaj`, body, {
-    headers: {
-      Cookie: cookie,
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      "Content-Type": "application/x-www-form-urlencoded",
-      Origin: TB7,
-      Referer: `${TB7}/mojekonto/szukaj`,
-    },
-  });
-
-  const html = r.data;
-  const $ = cheerio.load(html);
-
-  const results = [];
-
-  $(".btn-1").each((i, el) => {
-    const form = $(el).closest("form");
-    const content = form.find("input[name='content']").attr("value");
-    const name = content?.split("/").pop();
-
-    if (!content || !name) return;
-
-    results.push({ content, name });
-  });
-
-  return results;
-}
-
-// Pobranie linków z /mojekonto/sciagaj
-async function getLinks(content, cookie) {
+// Szukanie filmu — POPRAWNA WERSJA
+async function searchTB7(title, cookie) {
   const r = await axios.post(
-    `${TB7}/mojekonto/sciagaj`,
-    new URLSearchParams({ content }),
+    `${TB7}/mojekonto/szukaj`,
+    new URLSearchParams({ search: title, type: "1" }),
     {
       headers: {
         Cookie: cookie,
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Content-Type": "application/x-www-form-urlencoded",
-        Origin: TB7,
-        Referer: `${TB7}/mojekonto/szukaj`,
+      },
+    }
+  );
+
+  const $ = cheerio.load(r.data);
+  const results = [];
+
+  $("table.list tr").each((i, row) => {
+    const link = $(row).find('input[name="search[]"]').attr("value");
+    const hosting = $(row).find("td").eq(1).text().trim();
+    const name = $(row).find("td").eq(2).text().trim();
+    const size = $(row).find("td").eq(3).text().trim();
+
+    if (link && name) {
+      results.push({ link, hosting, name, size });
+    }
+  });
+
+  return results;
+}
+
+// Pobranie linków z /mojekonto/sciagaj
+async function getDirectLinks(link, cookie) {
+  const r = await axios.post(
+    `${TB7}/mojekonto/sciagaj`,
+    new URLSearchParams({ content: link, step: "1" }),
+    {
+      headers: {
+        Cookie: cookie,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
       },
     }
   );
@@ -131,27 +123,23 @@ export default async function handler(req, res) {
     if (!id) return res.status(200).json({ streams: [] });
 
     let title = id;
-    let year = null;
 
     if (id.startsWith("tt")) {
       const t = await getTitle(id);
-      if (t) {
-        title = t.title;
-        year = t.year;
-      }
+      if (t) title = t.title;
     }
 
     const cookie = await login();
-    const results = await search(title, year, cookie);
+    const results = await searchTB7(title, cookie);
 
     if (!results.length) {
       return res.status(200).json({ streams: [] });
     }
 
-    const links = await getLinks(results[0].content, cookie);
+    const direct = await getDirectLinks(results[0].link, cookie);
 
     return res.status(200).json({
-      streams: links.map((url) => ({
+      streams: direct.map((url) => ({
         name: "TB7 Premium",
         title: results[0].name,
         url,

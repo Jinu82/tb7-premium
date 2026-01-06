@@ -42,6 +42,13 @@ async function login() {
     {
       maxRedirects: 0,
       validateStatus: (s) => s === 200 || s === 302,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Origin: TB7,
+        Referer: `${TB7}/zaloguj`,
+      },
     }
   );
 
@@ -56,15 +63,25 @@ async function login() {
 
 // Szukanie filmu
 async function search(title, year, cookie) {
-  const r = await axios.post(
-    `${TB7}/mojekonto/szukaj`,
-    new URLSearchParams({ search: title, type: "1" }),
-    {
-      headers: { Cookie: cookie },
-    }
-  );
+  const body = new URLSearchParams({
+    search: title,
+    type: "1",
+  });
 
-  const $ = cheerio.load(r.data);
+  const r = await axios.post(`${TB7}/mojekonto/szukaj`, body, {
+    headers: {
+      Cookie: cookie,
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Content-Type": "application/x-www-form-urlencoded",
+      Origin: TB7,
+      Referer: `${TB7}/mojekonto/szukaj`,
+    },
+  });
+
+  const html = r.data;
+  const $ = cheerio.load(html);
+
   const results = [];
 
   $(".btn-1").each((i, el) => {
@@ -86,7 +103,14 @@ async function getLinks(content, cookie) {
     `${TB7}/mojekonto/sciagaj`,
     new URLSearchParams({ content }),
     {
-      headers: { Cookie: cookie },
+      headers: {
+        Cookie: cookie,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Origin: TB7,
+        Referer: `${TB7}/mojekonto/szukaj`,
+      },
     }
   );
 
@@ -120,7 +144,9 @@ export default async function handler(req, res) {
     const cookie = await login();
     const results = await search(title, year, cookie);
 
-    if (!results.length) return res.status(200).json({ streams: [] });
+    if (!results.length) {
+      return res.status(200).json({ streams: [] });
+    }
 
     const links = await getLinks(results[0].content, cookie);
 

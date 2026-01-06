@@ -5,7 +5,8 @@ import { kv } from "@vercel/kv";
 const TB7_BASE_URL = "https://tb7.pl";
 const TMDB_KEY = process.env.TMDB_API_KEY;
 
-function stripPolishChars(text) {
+// Usuwa polskie znaki
+function stripPolish(text) {
   return text
     .replace(/ą/g, "a")
     .replace(/ć/g, "c")
@@ -18,18 +19,19 @@ function stripPolishChars(text) {
     .replace(/ż/g, "z");
 }
 
+// Pobiera tytuł PL z TMDb
 async function getTMDbTitle(imdbId) {
-  console.log("🔍 TMDb lookup for:", imdbId);
-  if (!TMDB_KEY) return null;
-
   try {
-    const res = await axios.get(`https://api.themoviedb.org/3/find/${imdbId}`, {
-      params: {
-        api_key: TMDB_KEY,
-        language: "pl-PL",
-        external_source: "imdb_id",
-      },
-    });
+    const res = await axios.get(
+      `https://api.themoviedb.org/3/find/${imdbId}`,
+      {
+        params: {
+          api_key: TMDB_KEY,
+          language: "pl-PL",
+          external_source: "imdb_id",
+        },
+      }
+    );
 
     const movie = res.data.movie_results?.[0];
     if (!movie) return null;
@@ -44,6 +46,7 @@ async function getTMDbTitle(imdbId) {
   }
 }
 
+// Logowanie do TB7
 async function loginTB7() {
   const config = (await kv.hgetall("tb7:config")) || {};
   const login = config.login;
@@ -51,28 +54,29 @@ async function loginTB7() {
 
   if (!login || !password) throw new Error("Brak loginu/hasła TB7");
 
-  const cachedCookie = await kv.get("tb7:sessionCookie");
-  if (cachedCookie) return cachedCookie;
+  const cached = await kv.get("tb7:cookie");
+  if (cached) return cached;
 
   const res = await axios.post(
     `${TB7_BASE_URL}/zaloguj`,
     new URLSearchParams({ login, haslo: password }),
     {
       maxRedirects: 0,
-      validateStatus: (s) => s === 302 || s === 200 || s === 301,
+      validateStatus: (s) => s === 302 || s === 200,
     }
   );
 
   const setCookie = res.headers["set-cookie"];
-  if (!setCookie || !setCookie.length) throw new Error("TB7 nie zwrócił cookie");
+  if (!setCookie) throw new Error("TB7 nie zwrócił cookie");
 
   const cookie = setCookie.map((c) => c.split(";")[0]).join("; ");
-  await kv.set("tb7:sessionCookie", cookie, { ex: 6 * 60 * 60 });
+  await kv.set("tb7:cookie", cookie, { ex: 6 * 60 * 60 });
+
   return cookie;
 }
 
+// Szukanie na TB7
 async function searchTB7(title, year, cookie) {
-  console.log("🔎 Szukam na TB7:", title, year);
   const res = await axios.post(
     `${TB7_BASE_URL}/mojekonto/szukaj`,
     new URLSearchParams({ search: title, type: "1" }),
@@ -100,24 +104,45 @@ async function searchTB7(title, year, cookie) {
     if (!nameLower.includes(titleLower)) return;
     if (year && !nameLower.includes(year)) return;
 
-    results.push({
-      name,
-      url: `${TB7_BASE_URL}/mojekonto/szukaj`,
-    });
+    results.push({ content, name });
   });
 
-  console.log("✅ Wyniki TB7:", results.length);
   return results;
+}
+
+// Pobranie linków z /mojekonto/sciagaj
+async function getDownloadLinks(content, cookie) {
+  const res = await axios.post(
+    `${TB7_BASE_URL}/mojekonto/sciagaj`,
+    new URLSearchParams({ content }),
+    {
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    }
+  );
+
+  const $ = cheerio.load(res.data);
+  const textarea = $("textarea").text().trim();
+
+  if (!textarea) return [];
+
+  return textarea
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 5);
 }
 
 export default async function handler(req, res) {
   try {
     const { id } = req.query;
-    if (!id) return res.status(400).json({ streams: [] });
+    if (!id) return res.status(200).json({ streams: [] });
 
     let title = id;
     let year = null;
 
+    // Pobierz tytuł z TMDb
     if (id.startsWith("tt")) {
       const tmdb = await getTMDbTitle(id);
       if (tmdb) {
@@ -128,31 +153,38 @@ export default async function handler(req, res) {
 
     const cookie = await loginTB7();
 
+    // Fallbacki wyszukiwania
     const attempts = [
-      { label: "Polski tytuł", value: title },
-      { label: "Oryginalny tytuł", value: stripPolishChars(title) },
-      { label: "IMDb ID", value: id },
+      title,
+      stripPolish(title),
+      id,
     ];
 
-    for (const attempt of attempts) {
-      console.log(`🟡 Próba: ${attempt.label} → ${attempt.value}`);
-      const results = await searchTB7(attempt.value, year, cookie);
+    let found = null;
+
+    for (const t of attempts) {
+      const results = await searchTB7(t, year, cookie);
       if (results.length) {
-        console.log("🟢 Trafione:", attempt.label);
-        return res.status(200).json({
-          streams: results.map((r) => ({
-            name: "TB7 Premium",
-            title: r.name,
-            url: r.url,
-          })),
-        });
+        found = results[0];
+        break;
       }
     }
 
-    console.log("🔴 Brak wyników po wszystkich próbach");
-    return res.status(200).json({ streams: [] });
+    if (!found) {
+      return res.status(200).json({ streams: [] });
+    }
+
+    // Kliknięcie = zgoda → pobieramy linki
+    const links = await getDownloadLinks(found.content, cookie);
+
+    return res.status(200).json({
+      streams: links.map((url) => ({
+        name: "TB7 Premium",
+        title: found.name,
+        url,
+      })),
+    });
   } catch (err) {
-    console.log("❌ Błąd stream.js:", err.message);
     return res.status(500).json({ streams: [], error: err.message });
   }
 }
